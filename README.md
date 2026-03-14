@@ -19,7 +19,8 @@ pip install "speech-to-text[vosk] @ git+https://github.com/Ch3vg/SpeechToText.gi
 pip install "speech-to-text[whisper] @ git+https://github.com/Ch3vg/SpeechToText.git"        # faster-whisper — CPU (auto-fallback)
 pip install "speech-to-text[whisper-gpu] @ git+https://github.com/Ch3vg/SpeechToText.git"    # faster-whisper + CUDA (NVIDIA GPU)
 pip install "speech-to-text[deepgram] @ git+https://github.com/Ch3vg/SpeechToText.git"       # Deepgram — облачный, WebSocket
-pip install "speech-to-text[all] @ git+https://github.com/Ch3vg/SpeechToText.git"            # все движки сразу (без CUDA)
+pip install "speech-to-text[normalize] @ git+https://github.com/Ch3vg/SpeechToText.git"     # LLM-нормализация (openai)
+pip install "speech-to-text[all] @ git+https://github.com/Ch3vg/SpeechToText.git"            # все движки + нормализация
 ```
 
 ### Системные требования
@@ -285,6 +286,216 @@ stt = SpeechToText(
 )
 ```
 
+## Нормализация (опционально)
+
+Необязательная постобработка текста через LLM для исправления ошибок
+распознавания. Один класс `LLMNormalizer` работает и с облачными API
+(OpenAI, Anthropic), и с локальными (Ollama) — через OpenAI-совместимый
+протокол.
+
+### Установка
+
+```bash
+pip install "speech-to-text[normalize] @ git+https://github.com/Ch3vg/SpeechToText.git"
+```
+
+### Облако (OpenAI)
+
+```python
+from speech_to_text import SpeechToText, Engine, NormalizationQuality
+
+text = SpeechToText(
+    Engine.WHISPER,
+    source="recording.ogg",
+    normalizer="llm",
+    normalizer_api_key="sk-...",
+    normalizer_quality=NormalizationQuality.ACCURATE,
+).transcribe()
+```
+
+### Локально (Ollama)
+
+```python
+from speech_to_text import SpeechToText, Engine, NormalizationQuality
+
+text = SpeechToText(
+    Engine.WHISPER,
+    source="recording.ogg",
+    normalizer="llm",
+    normalizer_base_url="http://localhost:11434/v1",
+    normalizer_quality=NormalizationQuality.FAST,
+).transcribe()
+```
+
+### Область применения
+
+По умолчанию нормализация применяется ко всем результатам (PARTIAL и FINAL).
+Параметр `normalize_scope` ограничивает обработку:
+
+```python
+from speech_to_text import SpeechToText, Engine, ResultType
+
+stt = SpeechToText(
+    Engine.WHISPER,
+    normalizer="llm",
+    normalizer_api_key="sk-...",
+    normalize_scope=ResultType.FINAL,  # нормализовать только финальные результаты
+)
+```
+
+### Параметры нормализации
+
+| Параметр              | По умолчанию           | Описание                                          |
+|-----------------------|------------------------|---------------------------------------------------|
+| `normalizer`          | `None`                 | `"llm"`, экземпляр `Normalizer`, или `None`       |
+| `normalize_scope`     | `None` (все)           | `ResultType.FINAL`, `ResultType.PARTIAL` или `None`|
+| `normalizer_api_key`  | `"ollama"` для локальных| API-ключ                                          |
+| `normalizer_base_url` | —                      | URL сервера (localhost = локальный режим)          |
+| `normalizer_model`    | автоматически          | Явное имя модели (перебивает quality preset)       |
+| `normalizer_quality`  | `BALANCED`             | `NormalizationQuality.FAST/BALANCED/ACCURATE`     |
+| `normalizer_language` | —                      | Подсказка языка для LLM                           |
+
+### Quality presets
+
+| Quality      | Cloud (OpenAI) | Local (Ollama)  |
+|--------------|----------------|-----------------|
+| `FAST`       | `gpt-4o-mini`  | `qwen2.5:3b`    |
+| `BALANCED`   | `gpt-4o`       | `qwen2.5:7b`    |
+| `ACCURATE`   | `gpt-4o`       | `qwen2.5:32b`   |
+
+### Локальная нормализация через Ollama
+
+[Ollama](https://ollama.com) позволяет запускать LLM локально без отправки
+данных в облако. Нормализатор работает с Ollama через OpenAI-совместимый API.
+
+#### Установка Ollama
+
+**Windows:**
+
+```bash
+# Скачайте и запустите установщик с https://ollama.com/download/windows
+# После установки Ollama запускается как сервис автоматически
+```
+
+**Linux:**
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**macOS:**
+
+```bash
+# Скачайте с https://ollama.com/download/mac
+# Или через Homebrew:
+brew install ollama
+```
+
+#### Загрузка модели
+
+После установки скачайте модель нужного размера. Используются модели Qwen 2.5 —
+у них отличная поддержка мультиязычности (включая русский):
+
+```bash
+# FAST — минимальная задержка (~0.5-1 с на фразу)
+ollama pull qwen2.5:3b
+
+# BALANCED — хорошее качество (~1-3 с на фразу), рекомендуется
+ollama pull qwen2.5:7b
+
+# ACCURATE — максимальная точность (~5-15 с на фразу)
+ollama pull qwen2.5:32b
+```
+
+Ollama автоматически запускает API-сервер на `http://localhost:11434`.
+Проверить, что всё работает:
+
+```bash
+ollama list              # список загруженных моделей
+curl http://localhost:11434/v1/models   # API должен отвечать
+```
+
+#### Использование
+
+```python
+from speech_to_text import SpeechToText, Engine, NormalizationQuality
+
+text = SpeechToText(
+    Engine.WHISPER,
+    source="recording.ogg",
+    normalizer="llm",
+    normalizer_base_url="http://localhost:11434/v1",
+    normalizer_quality=NormalizationQuality.BALANCED,
+    normalizer_language="ru",
+).transcribe()
+```
+
+#### Требования к оборудованию
+
+Ollama использует GPU (если доступен) или CPU. Модели загружаются в память
+целиком, поэтому главное ограничение — объём RAM/VRAM.
+
+| Модель          | Quality    | RAM/VRAM   | GPU (рекомендуется)         | Задержка на фразу | Примечание                        |
+|-----------------|------------|------------|-----------------------------|--------------------|-----------------------------------|
+| `qwen2.5:3b`    | FAST       | ~3 ГБ     | любой с ≥4 ГБ VRAM         | ~0.5-1 с          | Быстрый, базовые исправления      |
+| `qwen2.5:7b`    | BALANCED   | ~5 ГБ     | ≥6 ГБ VRAM (GTX 1660+)    | ~1-3 с            | Рекомендуемый, хорошее качество   |
+| `qwen2.5:32b`   | ACCURATE   | ~20 ГБ    | ≥24 ГБ VRAM (RTX 3090/4090)| ~5-15 с           | Высокая точность                  |
+
+**Работа на CPU (без GPU):**
+
+Все модели работают и на CPU, но медленнее. Ориентировочные задержки:
+
+| Модель          | CPU (8 ядер, DDR4) | CPU (16 ядер, DDR5) |
+|-----------------|--------------------|--------------------|
+| `qwen2.5:3b`    | ~2-4 с            | ~1-2 с             |
+| `qwen2.5:7b`    | ~5-10 с           | ~2-5 с             |
+| `qwen2.5:32b`   | ~30-60 с          | ~15-30 с           |
+
+> **Рекомендация:** Для real-time нормализации с микрофона используйте
+> `FAST` или `BALANCED` на GPU. Для пакетной обработки файлов подойдёт
+> `ACCURATE` даже на CPU — задержка менее критична.
+
+> **Совет:** Если GPU недостаточно мощный, но хочется точности — используйте
+> `BALANCED` локально для real-time, а `ACCURATE` через облачный API (OpenAI)
+> для финальной обработки.
+
+### Кастомный нормализатор
+
+Наследуйте `Normalizer` для любой собственной логики (словарь, регулярки,
+своя ML-модель и т.д.):
+
+```python
+from speech_to_text import Normalizer, SpeechToText, Engine
+
+class SpellCheckNormalizer(Normalizer):
+    def normalize(self, text: str) -> str:
+        return my_spellcheck(text)
+
+stt = SpeechToText(Engine.VOSK, normalizer=SpellCheckNormalizer())
+```
+
+Или зарегистрируйте нормализатор по имени для повторного использования:
+
+```python
+from speech_to_text import register_normalizer
+
+register_normalizer("spellcheck", SpellCheckNormalizer)
+
+stt = SpeechToText(Engine.VOSK, normalizer="spellcheck")
+```
+
+### Поле raw_text
+
+Если нормализация включена, оригинальный текст сохраняется в
+`result.raw_text`, а `result.text` содержит исправленную версию:
+
+```python
+for result in stt:
+    print(f"Исправлено: {result.text}")
+    if result.raw_text:
+        print(f"Оригинал:   {result.raw_text}")
+```
+
 ## Модель данных
 
 ### TranscriptionResult
@@ -294,10 +505,11 @@ stt = SpeechToText(
 ```python
 @dataclass
 class TranscriptionResult:
-    text: str                        # распознанный текст
+    text: str                        # распознанный текст (или нормализованный)
     type: ResultType                 # PARTIAL или FINAL
     language: str | None = None      # язык (если определён движком)
     confidence: float | None = None  # уверенность (0.0-1.0)
+    raw_text: str | None = None      # оригинал до нормализации (None если не было)
     timestamp: float = ...           # время получения (time.time())
 ```
 
@@ -392,10 +604,18 @@ AudioSource                          STTEngine
         │                                  │
         └──(audio chunks)──► feed_audio ──►│
                                            ▼
-                               TranscriptionResult ──► Queue
-                                                         │
-                                                   ├──► __iter__()
-                                                   └──► on_result()
+                               TranscriptionResult
+                                           │
+                                    ┌──────┴───────┐
+                                    │  Normalizer? │  (опционально)
+                                    │  ├── LLM     │
+                                    │  └── Custom  │
+                                    └──────┬───────┘
+                                           ▼
+                                   Queue (text + raw_text)
+                                           │
+                                     ├──► __iter__()
+                                     └──► on_result()
 ```
 
 - **AudioSource** — абстрактный источник звука. `MicrophoneSource` захватывает
@@ -414,13 +634,17 @@ speech_to_text/
     __init__.py              # публичный API
     core.py                  # SpeechToText — оркестратор
     audio.py                 # AudioSource, MicrophoneSource, FileSource, list_devices
-    models.py                # TranscriptionResult, ResultType
+    models.py                # TranscriptionResult, ResultType, NormalizationQuality
     engines/
         __init__.py          # реестр движков, lazy-загрузка
         base.py              # STTEngine, CloudSTTEngine
         vosk_engine.py       # Vosk (Kaldi)
         whisper_engine.py    # faster-whisper + energy-based VAD
         deepgram_engine.py   # Deepgram WebSocket
+    normalizers/
+        __init__.py          # реестр нормализаторов, lazy-загрузка
+        base.py              # Normalizer — абстрактный класс
+        llm_normalizer.py    # LLMNormalizer — OpenAI-совместимый API
 examples/
     iterator_example.py      # итератор с Vosk
     callback_example.py      # callback с Vosk
@@ -429,6 +653,7 @@ examples/
     custom_engine_example.py     # кастомный движок
     file_source_example.py       # транскрипция из файла
     select_microphone_example.py # выбор микрофона
+    normalize_example.py         # нормализация через LLM
 pyproject.toml                   # зависимости, optional extras
 ```
 
@@ -457,6 +682,9 @@ python examples/file_source_example.py recording.wav
 
 # Выбор микрофона из списка
 python examples/select_microphone_example.py
+
+# Нормализация через LLM (нужен pip install -e ".[normalize]")
+python examples/normalize_example.py recording.ogg
 ```
 
 ## Сравнение движков

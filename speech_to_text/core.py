@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import queue
 import threading
 from collections.abc import Callable
@@ -9,9 +10,10 @@ from typing import Any
 from .audio import AudioSource, BytesSource, FileSource, MicrophoneSource
 from .engines import create_engine
 from .models import Engine, ResultType, TranscriptionResult
+from .normalizers import create_normalizer
+from .normalizers.base import Normalizer
 
 _SENTINEL = object()
-
 
 class SpeechToText:
     """High-level speech-to-text interface with pluggable engines.
@@ -34,6 +36,15 @@ class SpeechToText:
 
         for result in SpeechToText(Engine.VOSK, source="recording.wav"):
             print(result.text)
+
+    **Normalization** (optional LLM post-processing)::
+
+        text = SpeechToText(
+            Engine.WHISPER,
+            source="recording.ogg",
+            normalizer="llm",
+            normalizer_api_key="sk-...",
+        ).transcribe()
     """
 
     def __init__(
@@ -45,13 +56,27 @@ class SpeechToText:
         device: int | str | None = None,
         sample_rate: int = 16_000,
         block_size: int = 4000,
-        **engine_config: Any,
+        normalizer: Normalizer | str | None = None,
+        normalize_scope: ResultType | None = None,
+        **extra_config: Any,
     ) -> None:
         self._partial_results = partial_results
         self._result_queue: queue.Queue[TranscriptionResult | object] = queue.Queue()
         self._callbacks: list[Callable[[TranscriptionResult], None]] = []
         self._running = False
         self._lock = threading.Lock()
+
+        norm_config: dict[str, Any] = {}
+        engine_config: dict[str, Any] = {}
+        for key, val in extra_config.items():
+            if key.startswith("normalizer_"):
+                norm_config[key.removeprefix("normalizer_")] = val
+            else:
+                engine_config[key] = val
+
+        self._normalizer = _build_normalizer(normalizer, norm_config)
+        self._normalize_scope = normalize_scope
+        self._batch_normalize = False
 
         self._engine = create_engine(
             engine, on_result=self._handle_result, sample_rate=sample_rate, **engine_config
@@ -80,6 +105,16 @@ class SpeechToText:
     def _handle_result(self, result: TranscriptionResult) -> None:
         if not self._partial_results and result.type == ResultType.PARTIAL:
             return
+        if (
+            self._normalizer is not None
+            and not self._batch_normalize
+            and result.text
+            and (self._normalize_scope is None or result.type == self._normalize_scope)
+        ):
+            raw = result.text
+            result = dataclasses.replace(
+                result, text=self._normalizer.normalize(raw), raw_text=raw,
+            )
         for cb in self._callbacks:
             cb(result)
         self._result_queue.put(result)
@@ -94,15 +129,21 @@ class SpeechToText:
         """Run the full pipeline and return the complete transcription as a single string.
 
         Collects all FINAL results, joins them, and returns when the source
-        is exhausted.  Most useful with file / bytes sources::
+        is exhausted.  When a normalizer is configured, the **full** joined
+        text is normalized in a single request so the LLM sees complete
+        context::
 
             text = SpeechToText(Engine.WHISPER, source="recording.ogg").transcribe()
         """
+        self._batch_normalize = True
         parts: list[str] = []
         for result in self:
             if result.type == ResultType.FINAL and result.text:
                 parts.append(result.text)
-        return " ".join(parts)
+        joined = " ".join(parts)
+        if self._normalizer and joined:
+            return self._normalizer.normalize(joined)
+        return joined
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -163,3 +204,14 @@ class SpeechToText:
     def __del__(self) -> None:
         if self._running:
             self.stop()
+
+
+def _build_normalizer(
+    normalizer: Normalizer | str | None,
+    config: dict[str, Any],
+) -> Normalizer | None:
+    if normalizer is None:
+        return None
+    if isinstance(normalizer, Normalizer):
+        return normalizer
+    return create_normalizer(normalizer, **config)

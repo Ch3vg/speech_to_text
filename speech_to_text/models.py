@@ -24,10 +24,18 @@ class ResultType(Enum):
     FINAL = "final"
 
 
+class NormalizationQuality(str, Enum):
+    """Controls the accuracy/speed tradeoff for text normalization."""
+    FAST = "fast"
+    BALANCED = "balanced"
+    ACCURATE = "accurate"
+
+
 @dataclass
 class TranscriptionResult:
     text: str
     type: ResultType
     language: str | None = None
     confidence: float | None = None
+    raw_text: str | None = None
     timestamp: float = field(default_factory=time)
