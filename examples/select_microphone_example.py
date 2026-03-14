@@ -1,6 +1,6 @@
 """List available microphones and start recognition on the selected one."""
 
-from speech_to_text import SpeechToText, list_devices
+from speech_to_text import Engine, SpeechToText, list_devices
 
 devices = list_devices()
 
@@ -21,7 +21,7 @@ device = int(choice) if choice else None
 print("\nГоворите... (Ctrl+C для остановки)\n")
 
 try:
-    for result in SpeechToText("vosk", device=device, language="ru"):
+    for result in SpeechToText(Engine.VOSK, device=device, language="ru"):
         prefix = ">>>" if result.type.value == "final" else "..."
         print(f"{prefix} {result.text}")
 except KeyboardInterrupt:

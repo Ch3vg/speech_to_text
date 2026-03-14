@@ -23,17 +23,25 @@ classifiers = [
 ]
 dependencies = [
     "sounddevice>=0.4",
+    "soundfile>=0.12",
     "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
 vosk = ["vosk>=0.3.45"]
 whisper = ["faster-whisper>=1.0.0"]
+whisper-gpu = [
+    "faster-whisper>=1.0.0",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+]
 deepgram = ["deepgram-sdk>=3.0.0"]
 all = [
     "vosk>=0.3.45",
     "faster-whisper>=1.0.0",
     "deepgram-sdk>=3.0.0",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
 ]
 
 [project.urls]

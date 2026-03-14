@@ -1,6 +1,6 @@
 """Callback example — non-blocking speech recognition with result handler."""
 
-from speech_to_text import ResultType, SpeechToText
+from speech_to_text import Engine, ResultType, SpeechToText
 
 
 def on_text(result):
@@ -10,7 +10,7 @@ def on_text(result):
         print(f"    ... {result.text}", end="\r")
 
 
-stt = SpeechToText("vosk", language="ru")
+stt = SpeechToText(Engine.VOSK, language="ru")
 stt.on_result(on_text)
 stt.start()
 

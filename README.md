@@ -9,16 +9,17 @@ Python-библиотека непрерывного распознавания 
 Базовый пакет (без движков):
 
 ```bash
-pip install -e .
+pip install git+https://github.com/Ch3vg/SpeechToText.git
 ```
 
 С нужным движком:
 
 ```bash
-pip install -e ".[vosk]"       # Vosk — минимальная задержка, CPU
-pip install -e ".[whisper]"    # faster-whisper — высокая точность, GPU
-pip install -e ".[deepgram]"   # Deepgram — облачный, WebSocket
-pip install -e ".[all]"        # все движки сразу
+pip install "speech-to-text[vosk] @ git+https://github.com/Ch3vg/SpeechToText.git"           # Vosk — минимальная задержка, CPU
+pip install "speech-to-text[whisper] @ git+https://github.com/Ch3vg/SpeechToText.git"        # faster-whisper — CPU (auto-fallback)
+pip install "speech-to-text[whisper-gpu] @ git+https://github.com/Ch3vg/SpeechToText.git"    # faster-whisper + CUDA (NVIDIA GPU)
+pip install "speech-to-text[deepgram] @ git+https://github.com/Ch3vg/SpeechToText.git"       # Deepgram — облачный, WebSocket
+pip install "speech-to-text[all] @ git+https://github.com/Ch3vg/SpeechToText.git"            # все движки сразу (без CUDA)
 ```
 
 ### Системные требования
@@ -33,30 +34,42 @@ pip install -e ".[all]"        # все движки сразу
 ### Итератор — 2 строки
 
 ```python
-from speech_to_text import SpeechToText
+from speech_to_text import SpeechToText, Engine
 
-for result in SpeechToText("vosk"):
+for result in SpeechToText(Engine.VOSK):
     print(result.text)
 ```
 
 ### Callback — 4 строки
 
 ```python
-from speech_to_text import SpeechToText
+from speech_to_text import SpeechToText, Engine
 
-stt = SpeechToText("vosk", language="ru")
+stt = SpeechToText(Engine.VOSK, language="ru")
 stt.on_result(lambda r: print(r.text))
 stt.start()
 input("Enter для остановки...")
 stt.stop()
 ```
 
+### Транскрипция файла — 1 строка
+
+```python
+from speech_to_text import SpeechToText, Engine
+
+text = SpeechToText(Engine.WHISPER, source="recording.ogg").transcribe()
+print(text)
+```
+
+`transcribe()` собирает все FINAL-результаты, склеивает в одну строку
+и возвращает когда файл обработан.
+
 ### Context manager
 
 ```python
-from speech_to_text import SpeechToText
+from speech_to_text import SpeechToText, Engine
 
-with SpeechToText("vosk") as stt:
+with SpeechToText(Engine.VOSK) as stt:
     for result in stt:
         print(result.text)
 ```
@@ -69,13 +82,15 @@ with SpeechToText("vosk") as stt:
 Модели скачиваются автоматически при первом запуске.
 
 ```python
-stt = SpeechToText("vosk", language="ru")
+from speech_to_text import SpeechToText, Engine
+
+stt = SpeechToText(Engine.VOSK, language="ru")
 
 # Явное указание модели:
-stt = SpeechToText("vosk", model_name="vosk-model-small-ru-0.22")
+stt = SpeechToText(Engine.VOSK, model_name="vosk-model-small-ru-0.22")
 
 # Локальная модель:
-stt = SpeechToText("vosk", model_path="/path/to/model")
+stt = SpeechToText(Engine.VOSK, model_path="/path/to/model")
 ```
 
 | Параметр     | По умолчанию              | Описание                            |
@@ -91,19 +106,26 @@ stt = SpeechToText("vosk", model_path="/path/to/model")
 (energy-based VAD). Поддерживает промежуточные результаты через
 периодическую транскрипцию накопленного аудио.
 
+При `compute_device="auto"` (по умолчанию) движок пытается использовать
+CUDA; если библиотеки CUDA не установлены, автоматически переключается
+на CPU с предупреждением в лог. Для явного использования GPU установите
+пакет с CUDA-зависимостями: `pip install speech-to-text[whisper-gpu]`.
+
 ```python
-stt = SpeechToText("whisper", model="small", language="ru")
+from speech_to_text import SpeechToText, Engine, Device
+
+stt = SpeechToText(Engine.WHISPER, model="small", language="ru")
 
 # Тонкая настройка:
 stt = SpeechToText(
-    "whisper",
+    Engine.WHISPER,
     model="medium",
     language="ru",
-    compute_device="cuda",      # "auto", "cpu", "cuda"
-    compute_type="float16",     # "default", "float16", "int8"
-    energy_threshold=300,       # порог энергии для детекции речи
-    silence_duration=0.8,       # секунды тишины для завершения фразы
-    partial_interval=2.0,       # интервал промежуточных результатов (сек)
+    compute_device=Device.CUDA,  # Device.AUTO, Device.CPU, Device.CUDA
+    compute_type="float16",      # "default", "float16", "int8"
+    energy_threshold=300,        # порог энергии для детекции речи
+    silence_duration=0.8,        # секунды тишины для завершения фразы
+    partial_interval=2.0,        # интервал промежуточных результатов (сек)
 )
 ```
 
@@ -111,7 +133,7 @@ stt = SpeechToText(
 |--------------------|--------------|-----------------------------------------------------------|
 | `model`            | `"small"`    | Размер модели: `tiny`, `base`, `small`, `medium`, `large` |
 | `language`         | `"ru"`       | ISO-код языка                                             |
-| `compute_device`   | `"auto"`     | Устройство: `auto`, `cpu`, `cuda`                         |
+| `compute_device`   | `Device.AUTO`| Устройство: `Device.AUTO`, `Device.CPU`, `Device.CUDA`    |
 | `compute_type`     | `"default"`  | Тип вычислений CTranslate2                                |
 | `energy_threshold` | `300`        | RMS-порог для детекции речи                               |
 | `silence_duration` | `0.8`        | Секунды тишины для финализации фразы                      |
@@ -124,7 +146,9 @@ stt = SpeechToText(
 при регистрации на [deepgram.com](https://deepgram.com)).
 
 ```python
-stt = SpeechToText("deepgram", api_key="YOUR_KEY", language="ru")
+from speech_to_text import SpeechToText, Engine
+
+stt = SpeechToText(Engine.DEEPGRAM, api_key="YOUR_KEY", language="ru")
 ```
 
 | Параметр       | По умолчанию  | Описание                              |
@@ -142,14 +166,16 @@ stt = SpeechToText("deepgram", api_key="YOUR_KEY", language="ru")
 ### Микрофон (по умолчанию)
 
 ```python
+from speech_to_text import SpeechToText, Engine
+
 # Системный микрофон по умолчанию
-stt = SpeechToText("vosk")
+stt = SpeechToText(Engine.VOSK)
 
 # Конкретный микрофон по индексу
-stt = SpeechToText("vosk", device=1)
+stt = SpeechToText(Engine.VOSK, device=1)
 
 # Конкретный микрофон по имени (подстрока, регистронезависимо)
-stt = SpeechToText("vosk", device="Realtek")
+stt = SpeechToText(Engine.VOSK, device="Realtek")
 ```
 
 ### Выбор микрофона
@@ -171,15 +197,15 @@ for dev in list_devices():
 ### Аудиофайл
 
 ```python
-from speech_to_text import SpeechToText, FileSource
+from speech_to_text import SpeechToText, Engine, FileSource
 
 # Короткий синтаксис — путь как строка
-for result in SpeechToText("vosk", source="recording.wav"):
+for result in SpeechToText(Engine.VOSK, source="recording.wav"):
     print(result.text)
 
 # Явный FileSource с настройками
 src = FileSource("recording.wav", realtime=False)
-for result in SpeechToText("vosk", source=src):
+for result in SpeechToText(Engine.VOSK, source=src):
     print(result.text)
 ```
 
@@ -189,33 +215,33 @@ for result in SpeechToText("vosk", source=src):
 | `realtime` | `True`       | Подавать чанки в реальном времени; `False` = максимальная скорость |
 | `block_size`| `4000`      | Сэмплов на чанк (250 мс при 16 kHz)                       |
 
-Форматы: `.wav` поддерживается из коробки; для `.mp3`, `.flac`, `.ogg`
-нужен `pip install soundfile`. Любой sample rate, количество каналов и
-битность автоматически конвертируются в 16 kHz mono int16.
+Форматы: WAV, OGG, FLAC, AIFF, MP3 и другие (все форматы `libsndfile`).
+Любой sample rate, количество каналов и битность автоматически
+конвертируются в 16 kHz mono int16.
 
 ### Байты (bytes)
 
 Если аудио уже в памяти — передайте `bytes` напрямую в `source`:
 
 ```python
-from speech_to_text import SpeechToText, BytesSource
+from speech_to_text import SpeechToText, Engine, BytesSource
 
 # Короткий синтаксис — raw PCM bytes (16 kHz, mono, int16 LE)
 pcm_data: bytes = get_audio_from_somewhere()
-for result in SpeechToText("vosk", source=pcm_data):
+for result in SpeechToText(Engine.VOSK, source=pcm_data):
     print(result.text)
 
-# Явный BytesSource — WAV-данные в памяти (автоматическая конвертация)
-wav_bytes = open("recording.wav", "rb").read()
-src = BytesSource(wav_bytes, raw=False)
-for result in SpeechToText("vosk", source=src):
+# Явный BytesSource — закодированные данные в памяти (WAV, OGG, FLAC, ...)
+audio_bytes = open("recording.ogg", "rb").read()
+src = BytesSource(audio_bytes, raw=False)
+for result in SpeechToText(Engine.VOSK, source=src):
     print(result.text)
 ```
 
 | Параметр   | По умолчанию | Описание                                                     |
 |------------|--------------|--------------------------------------------------------------|
 | `data`     | — (обязателен)| `bytes` / `bytearray` / `memoryview` с аудиоданными         |
-| `raw`      | `True`       | `True` = raw PCM; `False` = WAV-формат, будет декодирован    |
+| `raw`      | `True`       | `True` = raw PCM; `False` = закодированный аудио (WAV, OGG, FLAC, …) |
 | `realtime` | `False`      | Подавать чанки в реальном времени или максимально быстро      |
 | `block_size`| `4000`      | Сэмплов на чанк                                              |
 
@@ -238,7 +264,7 @@ class MySource(AudioSource):
     @property
     def is_running(self) -> bool: ...
 
-for result in SpeechToText("vosk", source=MySource()):
+for result in SpeechToText(Engine.VOSK, source=MySource()):
     print(result.text)
 ```
 
@@ -247,8 +273,10 @@ for result in SpeechToText("vosk", source=MySource()):
 Эти параметры доступны для любого движка:
 
 ```python
+from speech_to_text import SpeechToText, Engine
+
 stt = SpeechToText(
-    "vosk",
+    Engine.VOSK,            # Engine enum или строка для кастомных движков
     source=None,            # AudioSource, путь к файлу, или None (микрофон)
     partial_results=True,   # получать промежуточные результаты (по умолчанию True)
     device=None,            # ID или имя микрофона (None = системное по умолчанию)
@@ -349,7 +377,7 @@ register_engine("my_cloud", MyCloudEngine)
 После регистрации движок доступен по имени:
 
 ```python
-for result in SpeechToText("my_cloud", api_key="...", base_url="wss://..."):
+for result in SpeechToText("my_cloud", api_key="...", base_url="wss://..."):  # строка для кастомных
     print(result.text)
 ```
 

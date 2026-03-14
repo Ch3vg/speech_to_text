@@ -4,32 +4,33 @@ from collections.abc import Callable
 from typing import Any
 
 from .base import STTEngine
-from ..models import TranscriptionResult
+from ..models import Engine, TranscriptionResult
 
 _ENGINE_REGISTRY: dict[str, type[STTEngine]] = {}
 
 
-def register_engine(name: str, engine_class: type[STTEngine]) -> None:
+def register_engine(name: Engine | str, engine_class: type[STTEngine]) -> None:
     _ENGINE_REGISTRY[name] = engine_class
 
 
 def create_engine(
-    name: str,
+    name: Engine | str,
     on_result: Callable[[TranscriptionResult], None],
     **config: Any,
 ) -> STTEngine:
     if name not in _ENGINE_REGISTRY:
         _try_load_engine(name)
     if name not in _ENGINE_REGISTRY:
+        label = name.value if isinstance(name, Engine) else name
         available = ", ".join(sorted(_ENGINE_REGISTRY)) or "(none)"
         raise ValueError(
-            f"Unknown engine '{name}'. Available: {available}. "
-            f"Install the required extra, e.g.: pip install speech-to-text[{name}]"
+            f"Unknown engine '{label}'. Available: {available}. "
+            f"Install the required extra, e.g.: pip install speech-to-text[{label}]"
         )
     return _ENGINE_REGISTRY[name](on_result=on_result, **config)
 
 
-def _try_load_engine(name: str) -> None:
+def _try_load_engine(name: Engine | str) -> None:
     loaders = {
         "vosk": _load_vosk,
         "whisper": _load_whisper,

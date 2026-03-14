@@ -21,3 +21,6 @@ env/
 .env.*
 
 *.log
+
+hf_token
+deepgram_key

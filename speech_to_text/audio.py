@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import io
 import queue
 import threading
-import wave
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
+import soundfile as sf
 
 SAMPLE_RATE = 16_000
 CHANNELS = 1
@@ -139,17 +140,17 @@ class MicrophoneSource(AudioSource):
 # ---------------------------------------------------------------------------
 
 class BytesSource(AudioSource):
-    """Feeds pre-loaded raw PCM audio bytes.
+    """Feeds pre-loaded audio bytes.
 
-    Accepts ``bytes``, ``bytearray``, or ``memoryview`` containing raw PCM
-    data.  By default the data is assumed to already be in the engine format
-    (16 kHz, mono, int16 LE).  Set *raw=False* if the data is a WAV-formatted
-    byte string — it will be decoded and converted automatically.
+    Accepts ``bytes``, ``bytearray``, or ``memoryview``.  By default the data
+    is assumed to already be in the engine format (16 kHz, mono, int16 LE).
+    Set *raw=False* if the data is an encoded audio byte string (WAV, OGG,
+    FLAC, etc.) — it will be decoded and converted automatically.
 
     Parameters:
-        data:        Raw PCM bytes or WAV-formatted bytes.
+        data:        Raw PCM bytes or encoded audio bytes.
         raw:         If *True* (default), *data* is raw PCM.  If *False*,
-                     *data* is treated as a WAV byte string and decoded.
+                     *data* is decoded via ``soundfile`` (WAV, OGG, FLAC, …).
         sample_rate: Target sample rate (default 16 000).
         block_size:  Samples per chunk (default 4 000 = 250 ms).
         realtime:    If *True*, chunks are fed at real-time pace.
@@ -173,7 +174,7 @@ class BytesSource(AudioSource):
         if raw:
             self._pcm = bytes(data)
         else:
-            self._pcm = self._decode_wav(data, sample_rate)
+            self._pcm = _decode_audio_bytes(data, sample_rate)
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -211,33 +212,6 @@ class BytesSource(AudioSource):
         if self.on_finished is not None:
             self.on_finished()
 
-    @staticmethod
-    def _decode_wav(data: bytes | bytearray | memoryview, target_sr: int) -> bytes:
-        import io
-
-        with wave.open(io.BytesIO(bytes(data)), "rb") as wf:
-            sr = wf.getframerate()
-            channels = wf.getnchannels()
-            sampwidth = wf.getsampwidth()
-            raw = wf.readframes(wf.getnframes())
-
-        if sampwidth == 2:
-            audio = np.frombuffer(raw, dtype=np.int16)
-        elif sampwidth == 1:
-            audio = (np.frombuffer(raw, dtype=np.uint8).astype(np.int16) - 128) * 256
-        elif sampwidth == 4:
-            audio = (np.frombuffer(raw, dtype=np.int32) >> 16).astype(np.int16)
-        else:
-            raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
-
-        if channels > 1:
-            audio = audio.reshape(-1, channels).mean(axis=1).astype(np.int16)
-
-        if sr != target_sr:
-            audio = _resample(audio.astype(np.float32), sr, target_sr).astype(np.int16)
-
-        return audio.tobytes()
-
 
 # ---------------------------------------------------------------------------
 # File
@@ -246,10 +220,9 @@ class BytesSource(AudioSource):
 class FileSource(AudioSource):
     """Reads audio from a file and feeds it as PCM chunks.
 
-    Automatically converts sample rate, channels, and bit depth to the format
-    expected by engines (16 kHz, mono, int16).  Uses the built-in ``wave``
-    module for WAV files; install ``soundfile`` (``pip install soundfile``) for
-    MP3, FLAC, OGG, and other formats.
+    Supports WAV, OGG, FLAC, AIFF, and other formats handled by ``libsndfile``
+    (via the ``soundfile`` package).  Automatically converts sample rate,
+    channels, and bit depth to the engine format (16 kHz, mono, int16).
 
     Parameters:
         path:        Path to the audio file.
@@ -313,62 +286,30 @@ class FileSource(AudioSource):
         if self.on_finished is not None:
             self.on_finished()
 
-    # -- audio loading & conversion ----------------------------------------
-
     def _load_audio(self) -> bytes:
-        """Load audio file → 16 kHz mono int16 PCM bytes."""
-        try:
-            return self._load_with_soundfile()
-        except ImportError:
-            pass
-
-        if self._path.suffix.lower() not in (".wav",):
-            raise ValueError(
-                f"Unsupported audio format '{self._path.suffix}'. "
-                "Install soundfile for non-WAV formats: pip install soundfile"
-            )
-        return self._load_wav()
-
-    def _load_with_soundfile(self) -> bytes:
-        import soundfile as sf  # optional dependency
-
+        """Load audio file -> 16 kHz mono int16 PCM bytes."""
         audio, sr = sf.read(str(self._path), dtype="float32")
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        if sr != self._sample_rate:
-            audio = _resample(audio, sr, self._sample_rate)
-        return (audio * 32767).astype(np.int16).tobytes()
-
-    def _load_wav(self) -> bytes:
-        with wave.open(str(self._path), "rb") as wf:
-            sr = wf.getframerate()
-            channels = wf.getnchannels()
-            sampwidth = wf.getsampwidth()
-            raw = wf.readframes(wf.getnframes())
-
-        if sampwidth == 2:
-            audio = np.frombuffer(raw, dtype=np.int16)
-        elif sampwidth == 1:
-            audio = (np.frombuffer(raw, dtype=np.uint8).astype(np.int16) - 128) * 256
-        elif sampwidth == 4:
-            audio = (np.frombuffer(raw, dtype=np.int32) >> 16).astype(np.int16)
-        else:
-            raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
-
-        if channels > 1:
-            audio = audio.reshape(-1, channels).mean(axis=1).astype(np.int16)
-
-        if sr != self._sample_rate:
-            audio = _resample(
-                audio.astype(np.float32), sr, self._sample_rate
-            ).astype(np.int16)
-
-        return audio.tobytes()
+        return _to_pcm(audio, sr, self._sample_rate)
 
 
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
+def _to_pcm(audio: np.ndarray, sr: int, target_sr: int) -> bytes:
+    """Convert a float32 numpy array to 16 kHz mono int16 PCM bytes."""
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if sr != target_sr:
+        audio = _resample(audio, sr, target_sr)
+    return (audio * 32767).astype(np.int16).tobytes()
+
+
+def _decode_audio_bytes(data: bytes | bytearray | memoryview, target_sr: int) -> bytes:
+    """Decode in-memory audio bytes (WAV, OGG, FLAC, …) to PCM."""
+    audio, sr = sf.read(io.BytesIO(bytes(data)), dtype="float32")
+    return _to_pcm(audio, sr, target_sr)
+
 
 def _resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     """Resample via linear interpolation (good enough for speech)."""

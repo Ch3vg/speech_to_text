@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
-from deepgram import DeepgramClient, LiveOptions, LiveTranscriptionEvents
+from deepgram import DeepgramClient
+from deepgram.core.events import EventType
+from deepgram.listen.v1.types.listen_v1results import ListenV1Results
 
 from ..models import TranscriptionResult
 from .base import CloudSTTEngine
@@ -29,54 +32,67 @@ class DeepgramEngine(CloudSTTEngine):
         self._model_name: str = config.get("model", "nova-3")  # type: ignore[assignment]
         self._smart_format: bool = config.get("smart_format", True)  # type: ignore[assignment]
 
-        self._client = DeepgramClient(self._api_key)
+        self._client = DeepgramClient(api_key=self._api_key)
         self._connection = None
+        self._ctx = None
+        self._listener_thread: threading.Thread | None = None
         self._running = False
 
     # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
-        self._connection = self._client.listen.live.v("1")
-        self._connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
-
-        options = LiveOptions(
+        self._ctx = self._client.listen.v1.connect(
             model=self._model_name,
             language=self._language,
             encoding=self._encoding,
-            sample_rate=self._sample_rate,
-            channels=1,
-            interim_results=True,
-            punctuate=True,
-            smart_format=self._smart_format,
+            sample_rate=str(self._sample_rate),
+            channels="1",
+            interim_results="true",
+            punctuate="true",
+            smart_format=str(self._smart_format).lower(),
         )
-        self._connection.start(options)
+        self._connection = self._ctx.__enter__()
+        self._connection.on(EventType.MESSAGE, self._on_message)
+        self._listener_thread = threading.Thread(
+            target=self._connection.start_listening, daemon=True
+        )
+        self._listener_thread.start()
         self._running = True
 
     def feed_audio(self, chunk: bytes) -> None:
         if self._running and self._connection is not None:
-            self._connection.send(chunk)
+            self._connection.send_media(chunk)
 
     def stop(self) -> None:
         self._running = False
         if self._connection is not None:
             try:
-                self._connection.finish()
+                self._connection.send_finalize()
+                self._connection.send_close_stream()
             except Exception:
                 pass
+        if self._ctx is not None:
+            try:
+                self._ctx.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._ctx = None
             self._connection = None
+        if self._listener_thread is not None:
+            self._listener_thread.join(timeout=5)
+            self._listener_thread = None
 
     # -- Deepgram event handler --------------------------------------------
 
-    def _on_transcript(self, _client: object, result: object, **kwargs: object) -> None:
+    def _on_message(self, message: object) -> None:
+        if not isinstance(message, ListenV1Results):
+            return
         try:
-            channel = result.channel  # type: ignore[attr-defined]
-            alternative = channel.alternatives[0]
+            alternative = message.channel.alternatives[0]
             transcript: str = alternative.transcript
+            is_final = bool(message.is_final)
+            confidence = alternative.confidence
 
-            self._emit(
-                transcript,
-                is_final=result.is_final,  # type: ignore[attr-defined]
-                confidence=alternative.confidence,
-            )
+            self._emit(transcript, is_final=is_final, confidence=confidence)
         except (AttributeError, IndexError, TypeError):
             pass

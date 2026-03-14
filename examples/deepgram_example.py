@@ -2,7 +2,7 @@
 
 import os
 
-from speech_to_text import SpeechToText
+from speech_to_text import Engine, SpeechToText
 
 API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 if not API_KEY:
@@ -14,7 +14,7 @@ print("Говорите... (Ctrl+C для остановки)\n")
 
 try:
     for result in SpeechToText(
-        "deepgram",
+        Engine.DEEPGRAM,
         api_key=API_KEY,
         language="ru",
         partial_results=True,

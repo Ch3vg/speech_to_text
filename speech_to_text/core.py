@@ -8,7 +8,7 @@ from typing import Any
 
 from .audio import AudioSource, BytesSource, FileSource, MicrophoneSource
 from .engines import create_engine
-from .models import ResultType, TranscriptionResult
+from .models import Engine, ResultType, TranscriptionResult
 
 _SENTINEL = object()
 
@@ -20,32 +20,25 @@ class SpeechToText:
 
     **Iterator** (blocks the calling thread)::
 
-        for result in SpeechToText("vosk"):
+        for result in SpeechToText(Engine.VOSK):
             print(result.text)
 
     **Callback** (non-blocking)::
 
-        stt = SpeechToText("whisper", model="small", language="ru")
+        stt = SpeechToText(Engine.WHISPER, model="small", language="ru")
         stt.on_result(lambda r: print(r.text))
         stt.start()
 
     **Audio source** defaults to the system microphone but can be set to a
     file or any custom :class:`AudioSource`::
 
-        # file path shortcut
-        for result in SpeechToText("vosk", source="recording.wav"):
-            print(result.text)
-
-        # explicit FileSource
-        from speech_to_text import FileSource
-        src = FileSource("recording.wav", realtime=False)
-        for result in SpeechToText("vosk", source=src):
+        for result in SpeechToText(Engine.VOSK, source="recording.wav"):
             print(result.text)
     """
 
     def __init__(
         self,
-        engine: str,
+        engine: Engine | str,
         *,
         source: AudioSource | str | Path | bytes | bytearray | None = None,
         partial_results: bool = True,
@@ -95,6 +88,22 @@ class SpeechToText:
         """Register a callback invoked for every transcription result."""
         self._callbacks.append(callback)
 
+    # -- convenience -------------------------------------------------------
+
+    def transcribe(self) -> str:
+        """Run the full pipeline and return the complete transcription as a single string.
+
+        Collects all FINAL results, joins them, and returns when the source
+        is exhausted.  Most useful with file / bytes sources::
+
+            text = SpeechToText(Engine.WHISPER, source="recording.ogg").transcribe()
+        """
+        parts: list[str] = []
+        for result in self:
+            if result.type == ResultType.FINAL and result.text:
+                parts.append(result.text)
+        return " ".join(parts)
+
     # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
@@ -134,10 +143,8 @@ class SpeechToText:
     def __next__(self) -> TranscriptionResult:
         while True:
             try:
-                item = self._result_queue.get(timeout=0.1)
+                item = self._result_queue.get(timeout=1.0)
             except queue.Empty:
-                if not self._running:
-                    raise StopIteration
                 continue
             if item is _SENTINEL:
                 raise StopIteration
